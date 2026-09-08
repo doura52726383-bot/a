@@ -1,4 +1,4 @@
-```yaml
+
 name: Build zh-CN APK
 on:
 push:
