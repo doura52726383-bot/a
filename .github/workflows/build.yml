@@ -1,29 +1,115 @@
-name: Build zh-CN APK
+name: Build APK
+
 on:
-push:
-workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'app/**'
+      - 'gradle/**'
+      - 'gradle.properties'
+      - 'build.gradle*'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'app/**'
+      - 'gradle/**'
+      - 'gradle.properties'
+      - 'build.gradle*'
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Build type: debug or release'
+        required: false
+        default: 'debug'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-build:
-runs-on: ubuntu-latest
-steps:
-- name: Checkout
-uses: actions/checkout@v4
-- name: Extract source
-run: tar -xzf source.tar.gz --strip-components=1
-- name: Set up JDK 17
-uses: actions/setup-java@v4
-with:
-distribution: temurin
-java-version: "17"
-- name: Set up Android SDK
-uses: android-actions/setup-android@v3
-- name: Accept licenses and install platform
-run: |
-yes | sdkmanager --licenses || true
-sdkmanager "platforms;android-35" "build-tools;35.0.0"
-- name: Build debug APK
-run: bash gradlew assembleDebug --no-daemon
-- name: Upload APK
-uses: actions/upload-artifact@v4
-name: Tulsi-zhCN-APK
-path: app/build/outputs/apk/debug/*.apk
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # used by later steps; for workflow_dispatch input fallback to 'debug'
+      BUILD_TYPE: ${{ github.event.inputs.build_type || 'debug' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: (Optional) Extract source if provided
+        run: |
+          if [ -f source.tar.gz ]; then
+            tar -xzf source.tar.gz --strip-components=1
+          else
+            echo "no source.tar.gz found, continuing"
+          fi
+
+      - name: Set up JDK 17 (with Gradle cache)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+          cache-dependency-path: |
+            **/*.gradle*
+            gradle/wrapper/gradle-wrapper.properties
+            gradle.properties
+
+      - name: Show Java & Gradle versions
+        run: |
+          java -version
+          ./gradlew --version
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          api-levels: 35
+          build-tools: '35.0.0'
+          components: 'platforms;android-35,build-tools;35.0.0'
+
+      - name: Accept Android SDK licenses
+        run: |
+          # use sdkmanager from the installed SDK; tolerate non-zero exit in some environments
+          yes | sdkmanager --licenses || true
+
+      - name: Ensure gradlew is executable
+        run: chmod +x ./gradlew
+
+      - name: Optional: Decode release keystore (from secrets)
+        if: ${{ env.BUILD_TYPE == 'release' && secrets.ANDROID_KEYSTORE != '' }}
+        run: |
+          echo "Decoding Android keystore from secret"
+          echo "${{ secrets.ANDROID_KEYSTORE }}" | base64 --decode > android.keystore
+        # Expected secrets (optional):
+        # ANDROID_KEYSTORE (base64), KEY_ALIAS, KEY_PASSWORD, STORE_PASSWORD
+        # Configure your Gradle signing config to use these secrets or pass via gradle.properties.
+
+      - name: Build APK(s)
+        run: |
+          echo "Requested build type: $BUILD_TYPE"
+          if [ "$BUILD_TYPE" = "release" ]; then
+            ./gradlew assembleRelease --no-daemon --stacktrace
+          else
+            ./gradlew assembleDebug --no-daemon --stacktrace
+          fi
+
+      - name: Show outputs
+        run: |
+          echo "Listing build outputs:"
+          ls -al app/build/outputs || true
+
+      - name: Upload APK artifact(s)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-${{ env.BUILD_TYPE }}-apk-${{ github.run_id }}
+          path: app/build/outputs/**/*.apk
+          retention-days: 7
