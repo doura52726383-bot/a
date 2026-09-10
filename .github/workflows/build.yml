@@ -50,17 +50,11 @@ jobs:
       BUILD_TYPE: ${{ github.event.inputs.build_type || 'debug' }}
 
     steps:
-      # =========================
-      # 1. Checkout
-      # =========================
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      # =========================
-      # 2. Extract source
-      # =========================
       - name: Extract source archive safely
         shell: bash
         run: |
@@ -91,9 +85,6 @@ jobs:
           cp -a "$ROOT_DIR/." .
           chmod +x gradlew
 
-          echo ""
-          echo "Checking project files..."
-
           if [ ! -f gradlew ]; then
             echo "ERROR: gradlew missing"
             exit 1
@@ -112,9 +103,6 @@ jobs:
           echo "Project root verified."
           ls -la
 
-      # =========================
-      # 3. Java 17
-      # =========================
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
@@ -125,6 +113,71 @@ jobs:
             **/*.gradle*
             **/gradle-wrapper.properties
             gradle.properties
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: wrapper
+
+      - name: Show toolchain versions
+        run: |
+          echo "===== Java ====="
+          java -version
+          echo ""
+          echo "===== Gradle ====="
+          ./gradlew --version
+          echo ""
+          echo "===== Android SDK ====="
+          sdkmanager --version || true
+
+      - name: Build APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Build type: $BUILD_TYPE"
+
+          if [ "$BUILD_TYPE" = "release" ]; then
+            ./gradlew :app:assembleRelease --no-daemon --stacktrace
+          else
+            ./gradlew :app:assembleDebug --no-daemon --stacktrace
+          fi
+
+      - name: Verify APK output
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "===== APK OUTPUT ====="
+          find app/build/outputs -type f -name "*.apk" -print
+
+          COUNT="$(find app/build/outputs -type f -name "*.apk" | wc -l)"
+          echo ""
+          echo "APK count: $COUNT"
+
+          if [ "$COUNT" -eq 0 ]; then
+            echo "ERROR: Gradle finished but no APK was produced."
+            exit 1
+          fi
+
+      - name: Upload APK artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tulsi-\( {{ env.BUILD_TYPE }}-apk- \){{ github.run_id }}
+          path: app/build/outputs/**/*.apk
+          if-no-files-found: error
+          retention-days: 7            gradle.properties
 
       # =========================
       # 4. Android SDK
