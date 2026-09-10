@@ -51,6 +51,182 @@ jobs:
 
     steps:
       # =========================
+      # 1. Checkout
+      # =========================
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # =========================
+      # 2. Extract source
+      # =========================
+      - name: Extract source archive safely
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf _source
+          mkdir -p _source
+
+          if [ ! -f source.tar.gz ]; then
+            echo "ERROR: source.tar.gz is missing."
+            exit 1
+          fi
+
+          echo "Extracting source.tar.gz..."
+          tar -xzf source.tar.gz -C _source
+
+          echo "Searching for Gradle project..."
+          ROOT_DIR="$(find _source -type f -name gradlew -print -quit | xargs -r dirname)"
+
+          if [ -z "$ROOT_DIR" ]; then
+            echo "ERROR: gradlew was not found inside source.tar.gz"
+            echo "Archive contents:"
+            find _source -maxdepth 4 -type f | head -200
+            exit 1
+          fi
+
+          echo "Detected project root: $ROOT_DIR"
+          cp -a "$ROOT_DIR/." .
+          chmod +x gradlew
+
+          echo ""
+          echo "Checking project files..."
+
+          if [ ! -f gradlew ]; then
+            echo "ERROR: gradlew missing"
+            exit 1
+          fi
+
+          if [ ! -f settings.gradle.kts ] && [ ! -f settings.gradle ]; then
+            echo "ERROR: settings.gradle(.kts) missing"
+            exit 1
+          fi
+
+          if [ ! -f app/build.gradle.kts ] && [ ! -f app/build.gradle ]; then
+            echo "ERROR: app Gradle build file missing"
+            exit 1
+          fi
+
+          echo "Project root verified."
+          ls -la
+
+      # =========================
+      # 3. Java 17
+      # =========================
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+          cache-dependency-path: |
+            **/*.gradle*
+            **/gradle-wrapper.properties
+            gradle.properties
+
+      # =========================
+      # 4. Android SDK
+      # =========================
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      # =========================
+      # 5. Install Android 35
+      # =========================
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
+      # =========================
+      # 6. Setup Gradle
+      # =========================
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: wrapper
+
+      # =========================
+      # 7. Show versions
+      # =========================
+      - name: Show toolchain versions
+        run: |
+          echo "===== Java ====="
+          java -version
+          echo ""
+          echo "===== Gradle ====="
+          ./gradlew --version
+          echo ""
+          echo "===== Android SDK ====="
+          sdkmanager --version || true
+
+      # =========================
+      # 8. Build APK
+      # =========================
+      - name: Build APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Build type: $BUILD_TYPE"
+
+          if [ "$BUILD_TYPE" = "release" ]; then
+            ./gradlew :app:assembleRelease --no-daemon --stacktrace
+          else
+            ./gradlew :app:assembleDebug --no-daemon --stacktrace
+          fi
+
+      # =========================
+      # 9. Verify APK
+      # =========================
+      - name: Verify APK output
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "===== APK OUTPUT ====="
+          find app/build/outputs -type f -name "*.apk" -print
+
+          COUNT="$(find app/build/outputs -type f -name "*.apk" | wc -l)"
+          echo ""
+          echo "APK count: $COUNT"
+
+          if [ "$COUNT" -eq 0 ]; then
+            echo "ERROR: Gradle finished but no APK was produced."
+            exit 1
+          fi
+
+      # =========================
+      # 10. Upload APK
+      # =========================
+      - name: Upload APK artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tulsi-\( {{ env.BUILD_TYPE }}-apk- \){{ github.run_id }}
+          path: app/build/outputs/**/*.apk
+          if-no-files-found: error
+          retention-days: 7permissions:
+  contents: read
+
+concurrency:
+  group: \( {{ github.workflow }}- \){{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      BUILD_TYPE: ${{ github.event.inputs.build_type || 'debug' }}
+
+    steps:
+      # =========================
       # 1. 获取代码
       # =========================
       - name: Checkout
